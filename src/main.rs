@@ -19,19 +19,21 @@ struct AurResponse {
 
 #[derive(Debug, Deserialize)]
 struct AurPackage {
-    Name: String,
-    Version: String,
-    Description: Option<String>,
-    URL: Option<String>,
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Version")]
+    version: String,
+    #[serde(rename = "Description")]
+    description: Option<String>,
+    #[serde(rename = "URL")]
+    url: Option<String>,
     #[serde(rename = "NumVotes")]
-    NumVotes: Option<u32>,
-    // Add additional fields as needed.
+    num_votes: Option<u32>,
 }
 
-/// Searches the AUR for a package using the provided query string.
-/// Returns the list of packages found.
+/// Searches the AUR and return the response as a struct.
 async fn search_aur(query: &str) -> Result<AurResponse, Box<dyn Error>> {
-    // Create the AUR RPC search URL.
+    // Create the AUR RPC search url.
     let url = format!("https://aur.archlinux.org/rpc/?v=5&type=search&arg={}", query);
     let resp = reqwest::get(&url).await?;
 
@@ -57,18 +59,21 @@ fn search_official_repos(query: &str) -> Vec<String> {
 }
 
 /// Checks if a package is installed using pacman -Q
-/// Checks if a package is installed using pacman -Q
-fn is_package_installed(package: &str) -> bool {
-    Command::new("pacman")
+fn is_package_installed(package: &str, debug: bool) -> bool {
+    let result = Command::new("pacman")
         .args(["-Q", package])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())  // Add this line to suppress stderr
+        .stderr(std::process::Stdio::null())
         .status()
-        .map_or(false, |status| status.success())
+        .map_or(false, |status| status.success());
+
+    if debug {
+        println!("Debug: Checking {} - installed: {}", package, result);
+    }
+    result
 }
 
-/// Downloads the .SRCINFO file for the provided package from AUR.
-/// Returns the content as a String.
+/// Downloads the .SRCINFO file for the provided package from AUR and returns the content.
 async fn fetch_srcinfo(package: &str) -> Result<String, Box<dyn Error>> {
     let url = format!("https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={}", package);
     let resp = reqwest::get(&url).await?;
@@ -85,8 +90,7 @@ async fn fetch_srcinfo(package: &str) -> Result<String, Box<dyn Error>> {
     }
 }
 
-/// Parses the .SRCINFO content to extract a list of dependency names.
-/// It searches for lines starting with "depends =".
+/// Parses the .SRCINFO content to extract a list of dependency names and search for line with "depends ="
 fn parse_dependencies(srcinfo: &str) -> Vec<String> {
     let mut deps = Vec::new();
     for line in srcinfo.lines() {
@@ -101,7 +105,6 @@ fn parse_dependencies(srcinfo: &str) -> Vec<String> {
 }
 
 /// Checks whether a dependency is installed by calling "pacman -Q <dep>".
-/// Returns true if installed, false otherwise.
 fn check_dependency(dep: &str) -> bool {
     let status = Command::new("pacman").arg("-Q").arg(dep).status();
     match status {
@@ -153,9 +156,7 @@ async fn check_dependencies(package: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Clones the AUR repository for a package.
-/// The repository URL is typically https://aur.archlinux.org/<package>.git
-/// The package will be cloned into `/home/$USER/.cache/aurorus/<package name>`.
+/// Clones the AUR repository for a package. (Will be cloned to `/home/$USER/.cache/aurorus/<package name>`).
 async fn clone_package_repo(package: &str) -> Result<String, Box<dyn Error>> {
     let repo_url = format!("https://aur.archlinux.org/{}.git", package);
     let cache_dir = format!("/home/{}/.cache/aurorus", env::var("USER").unwrap_or_else(|_| "user".to_string()));
@@ -186,10 +187,7 @@ async fn clone_package_repo(package: &str) -> Result<String, Box<dyn Error>> {
 }
 
 /// Installs the package:
-/// 1. Searches for packages matching the query in both AUR and official repositories.
-/// 2. Displays search results with numbers, sorted by votes.
-/// 3. Prompts user to select a package.
-/// 4. Checks dependencies, clones the repo, and runs "makepkg -si".
+/// Do the same thing with search first, but then prompt the user to select a package to install.
 async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
     // Step 1: Search for packages matching the query in AUR.
     let aur_response = search_aur(query).await?;
@@ -205,7 +203,7 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
     };
 
     // Sort AUR packages by votes (lowest first)
-    combined_packages.sort_by_key(|pkg| pkg.NumVotes.unwrap_or(0));
+    combined_packages.sort_by_key(|pkg| pkg.num_votes.unwrap_or(0));
 
     // Calculate total packages for numbering
     let mut total_official_count = 0;
@@ -221,12 +219,12 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
     // Display AUR packages.
     println!("Found {} package(s) in AUR:", combined_packages.len());
     for pkg in combined_packages.iter() {
-        println!("{}. {} (Version: {}, Votes: {})", current_index, pkg.Name, pkg.Version, pkg.NumVotes.unwrap_or(0));
-        if let Some(desc) = &pkg.Description {
-            println!("   Description: {}", desc);
+        println!("{}. {} (version: {}, Votes: {})", current_index, pkg.name, pkg.version, pkg.num_votes.unwrap_or(0));
+        if let Some(desc) = &pkg.description {
+            println!("   description: {}", desc);
         }
-        if let Some(url) = &pkg.URL {
-            println!("   URL: {}", url);
+        if let Some(url) = &pkg.url {
+            println!("   url: {}", url);
         }
         println!("-------------------------");
         current_index -= 1;
@@ -242,9 +240,9 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
                     let name = parts[0];
                     let version = parts.get(1).unwrap_or(&"");
                     let repo = line[repo_start..].trim_matches(|c| c == '[' || c == ']');
-                    println!("{}. {} (Version: {}, Repository: {})", current_index, name, version, repo);
+                    println!("{}. {} (version: {}, Repository: {})", current_index, name, version, repo);
                     if let Some((_, desc_line)) = lines.next() {
-                        println!("   Description: {}", desc_line.trim());
+                        println!("   description: {}", desc_line.trim());
                     }
                     println!("-------------------------");
                     current_index -= 1;
@@ -270,7 +268,7 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
 
     // Step 4: Install the selected package.
     let selected_package = if reversed_selection <= combined_packages.len() {
-        &combined_packages[reversed_selection - 1].Name
+        &combined_packages[reversed_selection - 1].name
     } else {
         // Extract the package name from the official repository search result
         let mut count = 0;
@@ -329,7 +327,7 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
 /// Displays a simple help text.
 fn print_help() {
     println!("Available commands:");
-    println!("  search, s <package>     Search for a package in the AUR and official repositories (sorted by votes).");
+    println!("  search, s <package>     Search for a package in the AUR and official repositories (sorted by votes). (-d for debug)");
     println!("  install, i <package>    Install a package from the AUR or official repositories (checks dependencies, clones, builds).");
     println!("  uninstall, ui <package> Uninstall a package.");
     println!("  help                    Show this help message.");
@@ -378,9 +376,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             "search" | "s" => {
                 if args.is_empty() {
-                    println!("Usage: search <package> or s <package>");
+                    println!("Usage: search <package> or s <package> [-d]");
                 } else {
-                    let query = args.join(" ");
+                    let debug_mode = args.contains(&"-d");
+                    let query = args.iter()
+                            .filter(|arg| **arg != "-d")
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" ");
+
                     match search_aur(&query).await {
                         Ok(aur_response) => {
                             let mut combined_packages = if let Some(aur_packages) = aur_response.results {
@@ -389,10 +393,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 vec![]
                             };
 
-                            // Sort AUR packages by votes (lowest first)
-                            combined_packages.sort_by(|a, b| a.NumVotes.cmp(&b.NumVotes));
+                            // Sort AUR packages by votes
+                            combined_packages.sort_by(|a, b| a.num_votes.cmp(&b.num_votes));
 
-                            // First, get the total count of packages to calculate reverse numbering
+                            // get the total count of packages to calculate reverse numbering
                             let official_packages = search_official_repos(&query);
                             let mut total_count = 0;
 
@@ -406,46 +410,52 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                             let mut current_index = total_count;
 
-                            // Display AUR packages (already sorted by votes, lowest first)
+                            // Display AUR packages, sorted by votes, high to low
+                            // Display AUR packages, sorted by votes, high to low
                             for pkg in combined_packages.iter() {
-                                let installed = if is_package_installed(&pkg.Name) {
+                                let installed = if is_package_installed(&pkg.name, debug_mode) {
                                     " (Installed)"
                                 } else {
                                     ""
                                 };
-                                println!("{}. {} (v{}){}", current_index, pkg.Name, pkg.Version, installed);
-                                if let Some(desc) = &pkg.Description {
-                                    println!("   Description: {}", desc);
+                                println!("{}. {} (v{}){}", current_index, pkg.name, pkg.version, installed);
+                                if let Some(desc) = &pkg.description {
+                                    println!("   description: {}", desc);
                                 }
-                                println!("   Votes: {}", pkg.NumVotes.unwrap_or(0));
+                                println!("   Votes: {}", pkg.num_votes.unwrap_or(0));
                                 println!("-------------------------");
                                 current_index -= 1;
                             }
 
-                            // Display official repository packages (they will be shown first with lowest numbers)
+                            // Show pkgs from official repos
                             let mut lines = official_packages.iter().enumerate();
-
                             while let Some((_, line)) = lines.next() {
                                 if !line.starts_with(char::is_whitespace) {
                                     if let Some(repo_start) = line.find('[') {
                                         let package_info = &line[..repo_start].trim();
-                                        let repo = line[repo_start..].trim_matches(|c| c == '[' || c == ']');
-
-                                        let pkg_name = package_info.split_whitespace().next().unwrap_or("");
-                                        let installed = if is_package_installed(pkg_name) {
-                                            " (Installed)"
-                                        } else {
-                                            ""
-                                        };
-
-                                        println!("{}. {}{}", current_index, package_info, installed);
-                                        println!("   Repository: {}", repo);
-
-                                        if let Some((_, desc_line)) = lines.next() {
-                                            println!("   Description: {}", desc_line.trim());
+                                        let parts: Vec<&str> = package_info.split_whitespace().collect();
+                                        if !parts.is_empty() {
+                                            let name = parts[0];
+                                            let version = parts.get(1).unwrap_or(&"");
+                                            // Extract just the package name without repo prefix
+                                            let pkg_name = name.split('/').last().unwrap_or(name);
+                                            let installed = if is_package_installed(pkg_name, debug_mode) {
+                                                " (Installed)"
+                                            } else {
+                                                ""
+                                            };
+                                            println!("{}. {} (v{}){}",
+                                                current_index,
+                                                name,
+                                                version,
+                                                installed
+                                            );
+                                            if let Some((_, desc_line)) = lines.next() {
+                                                println!("   Description: {}", desc_line.trim());
+                                            }
+                                            println!("-------------------------");
+                                            current_index -= 1;
                                         }
-                                        println!("-------------------------");
-                                        current_index -= 1;
                                     }
                                 }
                             }
@@ -474,11 +484,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let debug_package = format!("{}-debug", package);
                     let mut packages = Vec::new();
 
-                    // Add packages to remove list if they are installed
-                    if is_package_installed(&package) {
+                    // Add debug pkgs to remove list, if installed along with main pkgs
+                    if is_package_installed(&package, false) {
                         packages.push(&package);
                     }
-                    if is_package_installed(&debug_package) {
+                    if is_package_installed(&debug_package, false) {
                         packages.push(&debug_package);
                     }
 
@@ -487,22 +497,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         continue;
                     }
 
-                    // Remove all packages in one command
+                    // Remove packages with dependency cleanup
                     let status = Command::new("sudo")
                         .arg("pacman")
-                        .arg("-R")
+                        .arg("-Rns")  // -Rns removes package, dependencies, and config files
                         .args(&packages)
                         .status();
 
                     match status {
                         Ok(exit_status) if exit_status.success() => {
-                            println!("Packages uninstalled successfully.");
+                            println!("Packages and dependencies removed successfully.");
                         }
                         Ok(_) => {
-                            eprintln!("Failed to uninstall packages.");
+                            eprintln!("Failed to remove packages.");
                         }
                         Err(err) => {
-                            eprintln!("Error uninstalling packages: {}", err);
+                            eprintln!("Error removing packages: {}", err);
                         }
                     }
                 }
