@@ -19,7 +19,7 @@ cd aurorus
 cargo build --release
 ```
 
-##Usage
+## Usage
 Run the application :
 ```sh
 ./target/release/aurorus
