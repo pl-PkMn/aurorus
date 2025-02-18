@@ -9,11 +9,29 @@ Aurorus is a small and a really bad AUR Helper, written in one main.rs file usin
 - Uninstall packages and (hopefully) cleanup
 - Simple CLI interface (In my opinion)
 
+## Dependencies
+Rust 1:1.84.1-1 (Higher or Lower will probably work)
+
 ## Installation
-
-To build and install Aurorus, you need to have Rust and Cargo installed. Clone the repository and build the project:
-
 ```sh
 git clone https://github.com/yourusername/aurorus.git
 cd aurorus
 cargo build --release
+```
+
+#Usage
+Run the application :
+```sh
+./target/release/aurorus
+```
+
+#Commands
+- search <package> or s <package>: Search for packages
+- install <package> or i <package>: Install a package
+- uninstall <package> or ui <package>: Uninstall a package
+- help: Show help message
+- exit: Exit application
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
