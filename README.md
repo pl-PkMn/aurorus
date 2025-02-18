@@ -19,13 +19,12 @@ cd aurorus
 cargo build --release
 ```
 
-#Usage
+##Usage
 Run the application :
 ```sh
 ./target/release/aurorus
 ```
-
-#Commands
+  Commands
 - search <package> or s <package>: Search for packages
 - install <package> or i <package>: Install a package
 - uninstall <package> or ui <package>: Uninstall a package
