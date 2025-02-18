@@ -1,6 +1,6 @@
 # Aurorus
 
-Aurorus is a small and a really bad AUR Helper, written in one main.rs file using Rust.
+Aurorus is a small and a terrible AUR Helper, written in one main.rs file using Rust.
 
 ## Features
 
@@ -24,7 +24,7 @@ Run the application :
 ```sh
 ./target/release/aurorus
 ```
-  Commands
+Commands
 - search <package> or s <package>: Search for packages
 - install <package> or i <package>: Install a package
 - uninstall <package> or ui <package>: Uninstall a package
