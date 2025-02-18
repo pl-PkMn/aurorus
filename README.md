@@ -1,4 +1,4 @@
-# Aurorus
+# aurorus
 
 Aurorus is a small and a terrible AUR Helper, written in one main.rs file using Rust.
 
