@@ -4,6 +4,7 @@ aurorus is a very basic and terrible AUR Helper. Written in Rust and in single m
 
 ## Installation
    ```sh
+   sudo pacman -S --needed base-devel
    git clone https://aur.archlinux.org/aurorus.git
    cd aurorus
    makepkg -si
