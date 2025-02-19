@@ -1,36 +1,48 @@
-# Aurorus
+# aurorus
 
-Aurorus is a small and a terrible AUR Helper, written in one main.rs file using Rust.
-
-## Features
-
-- Search for packages in AUR and repositories found in /etc/pacman.conf
-- Install packages and check dependencies
-- Uninstall packages and (hopefully) cleanup
-- Simple CLI interface (In my opinion)
-
-## Dependencies
-Rust 1:1.84.1-1 (Higher or Lower will probably work)
+aurorus is a very basic and terrible AUR Helper. Written in Rust and in single main.rs file.
 
 ## Installation
-```sh
-git clone https://github.com/yourusername/aurorus.git
-cd aurorus
-cargo build --release
-```
-
+   ```sh
+   sudo pacman -S --needed base-devel
+   git clone https://aur.archlinux.org/aurorus.git
+   cd aurorus
+   makepkg -si
+   ```
+   
 ## Usage
-Run the application :
+Runnning aurorus :
 ```sh
-./target/release/aurorus
+aurorus
 ```
-Commands
-- search <package> or s <package>: Search for packages
-- install <package> or i <package>: Install a package
-- uninstall <package> or ui <package>: Uninstall a package
-- help: Show help message
-- exit: Exit application
+Commands :
+
+search, s <package> : Search for a package in the AUR (sorted by votes) and repositories in '/etc/pacman.conf'.
+
+install, i <package> : Install a package from the AUR or repositories in '/etc/pacman.conf'.
+
+uninstall, ui <package> : Uninstall a package.
+
+help : Show help message.
+
+exit : Exit the application.
+
+### Examples
+
+- **Search for a package:**
+  ```sh
+  aurorus search <package_name>
+  ```
+
+- **Install a package:**
+  ```sh
+  aurorus install <package_name>
+  ```
+
+## Contributing
+
+Feel free to open issues or submit pull requests if you have any improvements or bug fixes. (Though, chances are, I'll probably leave it.)
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
