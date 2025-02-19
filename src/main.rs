@@ -324,12 +324,139 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Updates packages
+async fn update_packages() -> Result<(), Box<dyn Error>> {
+    use futures::stream::{self, StreamExt};
+
+    // Get installed AUR packages
+    let output = Command::new("pacman")
+        .args(["-Qm"])
+        .output()?;
+
+    let installed = String::from_utf8_lossy(&output.stdout);
+        let packages: Vec<(String, String)> = installed
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    Some((parts[0].to_string(), parts[1].to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+    if packages.is_empty() {
+        println!("No AUR packages installed.");
+        return Ok(());
+    }
+
+    println!("Checking {} AUR package(s)...", packages.len());
+
+    // Create chunks of package names for bulk RPC requests
+    let chunk_size = 50; // AUR allows up to 50 packages per request
+    let packages_chunks: Vec<Vec<String>> = packages
+        .chunks(chunk_size)
+        .map(|chunk| chunk.iter().map(|(name, _)| name.clone()).collect())
+        .collect();
+
+    // Process chunks in parallel
+    let mut updates_available = Vec::new();
+    let client = reqwest::Client::new();
+
+    let results = stream::iter(packages_chunks)
+        .map(|chunk| {
+            let client = &client;
+            async move {
+                let names = chunk.join("&arg[]=");
+                let url = format!("https://aur.archlinux.org/rpc/?v=5&type=info&arg[]={}", names);
+                client.get(&url).send().await?.json::<AurResponse>().await
+            }
+        })
+        .buffer_unordered(4) // Process 4 chunks concurrently
+        .collect::<Vec<_>>()
+        .await;
+
+    use version_compare::Version;
+
+    for result in results {
+        if let Ok(response) = result {
+            if let Some(aur_packages) = response.results {
+                for aur_pkg in aur_packages {
+                    if let Some((_, local_ver)) = packages.iter().find(|(name, _)| name == &aur_pkg.name) {
+                        let ver_local = Version::from(local_ver);
+                        let ver_aur = Version::from(&aur_pkg.version);
+                        if let Some(ver_local) = ver_local {
+                            if let Some(ver_aur) = ver_aur {
+                                if ver_local < ver_aur {
+                                    updates_available.push((aur_pkg.name, local_ver.clone(), aur_pkg.version));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if updates_available.is_empty() {
+        println!("All packages are up to date!");
+        return Ok(());
+    }
+
+    println!("\nUpdates available for {} package(s):", updates_available.len());
+    for (i, (pkg, current, new)) in updates_available.iter().enumerate() {
+        println!("{}. {} ({} -> {})", i + 1, pkg, current, new);
+    }
+
+    println!("\nEnter package numbers to update (e.g., '1 2 3'), or 'all' for all packages:");
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+
+    let to_update: Vec<(String, String, String)> = if input.trim().to_lowercase() == "all" {
+        updates_available
+    } else {
+        let selected: Vec<usize> = input
+            .split_whitespace()
+            .filter_map(|s| s.parse::<usize>().ok())
+            .filter(|&n| n > 0 && n <= updates_available.len())
+            .collect();
+
+        selected.iter()
+            .filter_map(|&i| updates_available.get(i - 1).cloned())
+            .collect()
+    };
+
+    for (package, _, _) in to_update {
+        println!("\nUpdating {}...", package);
+        let cache_dir = format!("/home/{}/.cache/aurorus", env::var("USER").unwrap_or_else(|_| "user".to_string()));
+        let pkg_path = format!("{}/{}", cache_dir, package);
+
+        clone_package_repo(&package).await?;
+
+        let install_status = TokioCommand::new("makepkg")
+            .args(["-si", "--noconfirm"])
+            .current_dir(&pkg_path)
+            .status()
+            .await?;
+
+        if install_status.success() {
+            println!("{} updated successfully", package);
+        } else {
+            eprintln!("Failed to update {}", package);
+        }
+    }
+
+    Ok(())
+}
+
 /// Displays a simple help text.
 fn print_help() {
     println!("Available commands:");
-    println!("  search, s <package>     Search for a package in the AUR and official repositories (sorted by votes). (-d for debug)");
+    println!("  search, s <package>     Search for a package in the AUR and official repositories (sorted by votes).");
     println!("  install, i <package>    Install a package from the AUR or official repositories (checks dependencies, clones, builds).");
     println!("  uninstall, ui <package> Uninstall a package.");
+    println!("  update, up             Update installed AUR packages.");
     println!("  help                    Show this help message.");
     println!("  exit                    Exit the application.");
 }
@@ -515,6 +642,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             eprintln!("Error removing packages: {}", err);
                         }
                     }
+                }
+            }
+            "update" | "up" => {
+                if let Err(err) = update_packages().await {
+                    eprintln!("Error updating packages: {}", err);
                 }
             }
             _ => {
