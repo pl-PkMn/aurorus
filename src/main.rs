@@ -334,17 +334,17 @@ async fn update_packages() -> Result<(), Box<dyn Error>> {
         .output()?;
 
     let installed = String::from_utf8_lossy(&output.stdout);
-        let packages: Vec<(String, String)> = installed
-            .lines()
-            .filter_map(|line| {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    Some((parts[0].to_string(), parts[1].to_string()))
-                } else {
-                    None
-                }
-            })
-            .collect();
+    let packages: Vec<(String, String)> = installed
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                Some((parts[0].to_string(), parts[1].to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     if packages.is_empty() {
         println!("No AUR packages installed.");
@@ -373,7 +373,7 @@ async fn update_packages() -> Result<(), Box<dyn Error>> {
                 client.get(&url).send().await?.json::<AurResponse>().await
             }
         })
-        .buffer_unordered(4) // Process 4 chunks concurrently
+        .buffer_unordered(4)
         .collect::<Vec<_>>()
         .await;
 
@@ -386,11 +386,9 @@ async fn update_packages() -> Result<(), Box<dyn Error>> {
                     if let Some((_, local_ver)) = packages.iter().find(|(name, _)| name == &aur_pkg.name) {
                         let ver_local = Version::from(local_ver);
                         let ver_aur = Version::from(&aur_pkg.version);
-                        if let Some(ver_local) = ver_local {
-                            if let Some(ver_aur) = ver_aur {
-                                if ver_local < ver_aur {
-                                    updates_available.push((aur_pkg.name, local_ver.clone(), aur_pkg.version));
-                                }
+                        if let (Some(ver_local), Some(ver_aur)) = (ver_local, ver_aur) {
+                            if ver_local < ver_aur {
+                                updates_available.push((aur_pkg.name, local_ver.clone(), aur_pkg.version));
                             }
                         }
                     }
@@ -400,7 +398,7 @@ async fn update_packages() -> Result<(), Box<dyn Error>> {
     }
 
     if updates_available.is_empty() {
-        println!("All packages are up to date!");
+        println!("No available update");
         return Ok(());
     }
 
@@ -409,11 +407,12 @@ async fn update_packages() -> Result<(), Box<dyn Error>> {
         println!("{}. {} ({} -> {})", i + 1, pkg, current, new);
     }
 
-    println!("\nEnter package numbers to update (e.g., '1 2 3'), or 'all' for all packages:");
+    println!("\nEnter package numbers to update (e.g., '1 2 3'), or press Enter to update all packages:");
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
 
-    let to_update: Vec<(String, String, String)> = if input.trim().to_lowercase() == "all" {
+    let input = input.trim();
+    let to_update: Vec<(String, String, String)> = if input.is_empty() || input.to_lowercase() == "all" {
         updates_available
     } else {
         let selected: Vec<usize> = input
