@@ -21,6 +21,8 @@ search, s <package> : Search for a package in the AUR (sorted by votes) and repo
 
 install, i <package> : Install a package from the AUR or repositories in '/etc/pacman.conf'.
 
+update, up : Update installed AUR packages.
+
 uninstall, ui <package> : Uninstall a package.
 
 help : Show help message.
