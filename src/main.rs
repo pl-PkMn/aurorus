@@ -186,8 +186,85 @@ async fn clone_package_repo(package: &str) -> Result<String, Box<dyn Error>> {
     Ok(dest)
 }
 
+fn print_aur_pkg(index: usize, pkg: &AurPackage) {
+    let installed = if is_package_installed(&pkg.name, false) { " (Installed)" } else { "" };
+    println!("{}. {} ({}){}", index, pkg.name, pkg.version, installed);
+    if let Some(desc) = &pkg.description {
+        println!("   description: {}", desc);
+    }
+    println!("   Votes: {}", pkg.num_votes.unwrap_or(0));
+    println!("-------------------------");
+}
+
+fn print_official_pkg(index: usize, line: &str) {
+    if let Some(repo_start) = line.find('[') {
+        let parts: Vec<&str> = line[..repo_start].trim().split_whitespace().collect();
+        if !parts.is_empty() {
+            let name = parts[0];
+            let version = parts.get(1).unwrap_or(&"");
+            let pkg_name = name.split('/').last().unwrap_or(name);
+            let installed = if is_package_installed(pkg_name, false) { " (Installed)" } else { "" };
+            println!("{}. {} ({}){}", index, name, version, installed);
+        }
+    }
+    println!("-------------------------");
+}
+
+async fn get_missing_dependencies(package: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    println!("Fetching .SRCINFO for {}...", package);
+    let srcinfo = fetch_srcinfo(package).await?;
+    let deps = parse_dependencies(&srcinfo);
+
+    if deps.is_empty() {
+        println!("No dependencies found for {}.", package);
+        return Ok(vec![]);
+    }
+
+    println!("Found dependencies:");
+    for dep in &deps {
+        println!("  {}", dep);
+    }
+    println!("\nChecking for missing dependencies:");
+    let mut missing = Vec::new();
+    for dep in deps {
+        if !check_dependency(&dep) {
+            println!("  {} is missing.", dep);
+            missing.push(dep);
+        } else {
+            println!("  {} is installed.", dep);
+        }
+    }
+    if !missing.is_empty() {
+        println!("\nMissing dependencies:");
+        for dep in &missing {
+            println!("  {}", dep);
+        }
+    } else {
+        println!("All dependencies for {} are satisfied.", package);
+    }
+    Ok(missing)
+}
+
+async fn install_aur_dependency(dep: &str) -> Result<(), Box<dyn Error>> {
+    println!("Installing dependency {}...", dep);
+    let package_dir = clone_package_repo(dep).await?;
+    let mut child = TokioCommand::new("makepkg")
+        .args(&["-si", "--noconfirm"])
+        .current_dir(&package_dir)
+        .spawn()?;
+    let status = child.wait().await?;
+    if status.success() {
+        println!("Dependency {} installed successfully.", dep);
+    } else {
+        eprintln!("Installation of dependency {} failed.", dep);
+    }
+    Ok(())
+}
+
+
 /// Installs the package:
-/// Do the same thing with search first, but then prompt the user to select a package to install.
+/// Performs a search, then prompts the user to select a package to install.
+/// Typing "back" or "quit" at the prompt will exit the installation process.
 async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
     // Step 1: Search for packages matching the query in AUR.
     let aur_response = search_aur(query).await?;
@@ -213,49 +290,34 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
         }
     }
     let total_count = total_official_count + combined_packages.len();
-
     let mut current_index = total_count;
 
-    // Display AUR packages.
+    // Display AUR packages using helper function.
     println!("Found {} package(s) in AUR:", combined_packages.len());
     for pkg in combined_packages.iter() {
-        println!("{}. {} (version: {}, Votes: {})", current_index, pkg.name, pkg.version, pkg.num_votes.unwrap_or(0));
-        if let Some(desc) = &pkg.description {
-            println!("   description: {}", desc);
-        }
-        if let Some(url) = &pkg.url {
-            println!("   url: {}", url);
-        }
-        println!("-------------------------");
+        print_aur_pkg(current_index, pkg);
         current_index -= 1;
     }
 
-    // Display official repository packages.
+    // Display official repository packages using helper function.
     let mut lines = official_packages.iter().enumerate();
     while let Some((_, line)) = lines.next() {
         if !line.starts_with(char::is_whitespace) {
-            if let Some(repo_start) = line.find('[') {
-                let parts: Vec<&str> = line[..repo_start].trim().split_whitespace().collect();
-                if !parts.is_empty() {
-                    let name = parts[0];
-                    let version = parts.get(1).unwrap_or(&"");
-                    let repo = line[repo_start..].trim_matches(|c| c == '[' || c == ']');
-                    println!("{}. {} (version: {}, Repository: {})", current_index, name, version, repo);
-                    if let Some((_, desc_line)) = lines.next() {
-                        println!("   description: {}", desc_line.trim());
-                    }
-                    println!("-------------------------");
-                    current_index -= 1;
-                }
-            }
+            print_official_pkg(current_index, line);
+            current_index -= 1;
         }
     }
 
     // Step 3: Prompt user to select a package.
-    println!("\nEnter the number of the package to install:",);
+    println!("\nEnter the number of the package to install (or type 'back' to cancel):");
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
-    let selection: usize = match input.trim().parse() {
+    let input = input.trim();
+    if input.eq_ignore_ascii_case("back") || input.eq_ignore_ascii_case("quit") {
+        println!("Exiting installation process.");
+        return Ok(());
+    }
+    let selection: usize = match input.parse() {
         Ok(num) if (1..=total_count).contains(&num) => num,
         _ => {
             eprintln!("Invalid selection. Please enter a number between 1 and {}.", total_count);
@@ -265,12 +327,10 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
 
     // Adjust selection to match the reversed numbering
     let reversed_selection = total_count - selection + 1;
-
-    // Step 4: Install the selected package.
     let selected_package = if reversed_selection <= combined_packages.len() {
         &combined_packages[reversed_selection - 1].name
     } else {
-        // Extract the package name from the official repository search result
+        // Extract the package name from the official repository search result.
         let mut count = 0;
         let mut package_name = "";
         for line in official_packages.iter() {
@@ -287,19 +347,28 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
 
     println!("Installing {}...", selected_package);
 
-    // Check dependencies.
-    check_dependencies(selected_package).await?;
+    // Check dependencies and get missing ones.
+    let missing_deps = get_missing_dependencies(selected_package).await?;
+    if !missing_deps.is_empty() {
+        println!("\nDo you want to install the missing dependencies? (y/N):");
+        let mut dep_input = String::new();
+        io::stdin().read_line(&mut dep_input)?;
+        if dep_input.trim().eq_ignore_ascii_case("y") {
+            for dep in missing_deps {
+                install_aur_dependency(&dep).await?;
+            }
+        } else {
+            println!("Proceeding without installing missing dependencies.");
+        }
+    }
 
-    // Clone the AUR repository if the package is from AUR.
+    // Step 4: Install the selected package.
     if selection <= combined_packages.len() {
         let package_dir = clone_package_repo(selected_package).await?;
-
-        // Build and install the package.
         let mut child = TokioCommand::new("makepkg")
             .arg("-si")
             .current_dir(&package_dir)
             .spawn()?;
-
         let status = child.wait().await?;
         if status.success() {
             println!("Package {} installed successfully.", selected_package);
@@ -307,13 +376,11 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
             eprintln!("Installation of {} failed.", selected_package);
         }
     } else {
-        // Install the package from official repositories using pacman.
         let status = Command::new("sudo")
             .arg("pacman")
             .arg("-S")
             .arg(selected_package)
             .status()?;
-
         if status.success() {
             println!("Package {} installed successfully.", selected_package);
         } else {
@@ -324,7 +391,10 @@ async fn install_package(query: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Updates packages
+/// Updates packages:
+/// 1. Checks and updates installed AUR packages.
+/// 2. Then updates official packages via pacman.
+/// Typing "back" or "quit" at the prompt during AUR update selection will exit the update process.
 async fn update_packages() -> Result<(), Box<dyn Error>> {
     use futures::stream::{self, StreamExt};
 
@@ -348,102 +418,115 @@ async fn update_packages() -> Result<(), Box<dyn Error>> {
 
     if packages.is_empty() {
         println!("No AUR packages installed.");
-        return Ok(());
-    }
+    } else {
+        println!("Checking {} AUR package(s)...", packages.len());
 
-    println!("Checking {} AUR package(s)...", packages.len());
+        // Create chunks of package names for bulk RPC requests
+        let chunk_size = 50; // AUR allows up to 50 packages per request
+        let packages_chunks: Vec<Vec<String>> = packages
+            .chunks(chunk_size)
+            .map(|chunk| chunk.iter().map(|(name, _)| name.clone()).collect())
+            .collect();
 
-    // Create chunks of package names for bulk RPC requests
-    let chunk_size = 50; // AUR allows up to 50 packages per request
-    let packages_chunks: Vec<Vec<String>> = packages
-        .chunks(chunk_size)
-        .map(|chunk| chunk.iter().map(|(name, _)| name.clone()).collect())
-        .collect();
+        // Process chunks in parallel
+        let mut updates_available = Vec::new();
+        let client = reqwest::Client::new();
 
-    // Process chunks in parallel
-    let mut updates_available = Vec::new();
-    let client = reqwest::Client::new();
+        let results = stream::iter(packages_chunks)
+            .map(|chunk| {
+                let client = &client;
+                async move {
+                    let names = chunk.join("&arg[]=");
+                    let url = format!("https://aur.archlinux.org/rpc/?v=5&type=info&arg[]={}", names);
+                    client.get(&url).send().await?.json::<AurResponse>().await
+                }
+            })
+            .buffer_unordered(4)
+            .collect::<Vec<_>>()
+            .await;
 
-    let results = stream::iter(packages_chunks)
-        .map(|chunk| {
-            let client = &client;
-            async move {
-                let names = chunk.join("&arg[]=");
-                let url = format!("https://aur.archlinux.org/rpc/?v=5&type=info&arg[]={}", names);
-                client.get(&url).send().await?.json::<AurResponse>().await
-            }
-        })
-        .buffer_unordered(4)
-        .collect::<Vec<_>>()
-        .await;
+        use version_compare::Version;
 
-    use version_compare::Version;
-
-    for result in results {
-        if let Ok(response) = result {
-            if let Some(aur_packages) = response.results {
-                for aur_pkg in aur_packages {
-                    if let Some((_, local_ver)) = packages.iter().find(|(name, _)| name == &aur_pkg.name) {
-                        let ver_local = Version::from(local_ver);
-                        let ver_aur = Version::from(&aur_pkg.version);
-                        if let (Some(ver_local), Some(ver_aur)) = (ver_local, ver_aur) {
-                            if ver_local < ver_aur {
-                                updates_available.push((aur_pkg.name, local_ver.clone(), aur_pkg.version));
+        for result in results {
+            if let Ok(response) = result {
+                if let Some(aur_packages) = response.results {
+                    for aur_pkg in aur_packages {
+                        if let Some((_, local_ver)) = packages.iter().find(|(name, _)| name == &aur_pkg.name) {
+                            let ver_local = Version::from(local_ver);
+                            let ver_aur = Version::from(&aur_pkg.version);
+                            if let (Some(ver_local), Some(ver_aur)) = (ver_local, ver_aur) {
+                                if ver_local < ver_aur {
+                                    updates_available.push((aur_pkg.name, local_ver.clone(), aur_pkg.version));
+                                }
                             }
                         }
                     }
                 }
             }
         }
-    }
 
-    if updates_available.is_empty() {
-        println!("No available update");
-        return Ok(());
-    }
-
-    println!("\nUpdates available for {} package(s):", updates_available.len());
-    for (i, (pkg, current, new)) in updates_available.iter().enumerate() {
-        println!("{}. {} ({} -> {})", i + 1, pkg, current, new);
-    }
-
-    println!("\nEnter package numbers to update (e.g., '1 2 3'), or press Enter to update all packages:");
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-
-    let input = input.trim();
-    let to_update: Vec<(String, String, String)> = if input.is_empty() || input.to_lowercase() == "all" {
-        updates_available
-    } else {
-        let selected: Vec<usize> = input
-            .split_whitespace()
-            .filter_map(|s| s.parse::<usize>().ok())
-            .filter(|&n| n > 0 && n <= updates_available.len())
-            .collect();
-
-        selected.iter()
-            .filter_map(|&i| updates_available.get(i - 1).cloned())
-            .collect()
-    };
-
-    for (package, _, _) in to_update {
-        println!("\nUpdating {}...", package);
-        let cache_dir = format!("/home/{}/.cache/aurorus", env::var("USER").unwrap_or_else(|_| "user".to_string()));
-        let pkg_path = format!("{}/{}", cache_dir, package);
-
-        clone_package_repo(&package).await?;
-
-        let install_status = TokioCommand::new("makepkg")
-            .args(["-si", "--noconfirm"])
-            .current_dir(&pkg_path)
-            .status()
-            .await?;
-
-        if install_status.success() {
-            println!("{} updated successfully", package);
+        if updates_available.is_empty() {
+            println!("No available update for AUR packages.");
         } else {
-            eprintln!("Failed to update {}", package);
+            println!("\nUpdates available for {} package(s):", updates_available.len());
+            for (i, (pkg, current, new)) in updates_available.iter().enumerate() {
+                println!("{}. {} ({} -> {})", i + 1, pkg, current, new);
+            }
+
+            println!("\nEnter package numbers to update (e.g., '1 2 3'), press Enter to update all packages, or type 'back' to cancel:");
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim();
+            if input.eq_ignore_ascii_case("back") || input.eq_ignore_ascii_case("quit") {
+                println!("Exiting update process.");
+                return Ok(());
+            }
+            let to_update: Vec<(String, String, String)> = if input.is_empty() || input.to_lowercase() == "all" {
+                updates_available
+            } else {
+                let selected: Vec<usize> = input
+                    .split_whitespace()
+                    .filter_map(|s| s.parse::<usize>().ok())
+                    .filter(|&n| n > 0 && n <= updates_available.len())
+                    .collect();
+
+                selected.iter()
+                    .filter_map(|&i| updates_available.get(i - 1).cloned())
+                    .collect()
+            };
+
+            for (package, _, _) in to_update {
+                println!("\nUpdating {}...", package);
+                let cache_dir = format!("/home/{}/.cache/aurorus", env::var("USER").unwrap_or_else(|_| "user".to_string()));
+                let pkg_path = format!("{}/{}", cache_dir, package);
+
+                clone_package_repo(&package).await?;
+
+                let install_status = TokioCommand::new("makepkg")
+                    .args(["-si", "--noconfirm"])
+                    .current_dir(&pkg_path)
+                    .status()
+                    .await?;
+
+                if install_status.success() {
+                    println!("{} updated successfully", package);
+                } else {
+                    eprintln!("Failed to update {}", package);
+                }
+            }
         }
+    }
+
+    // Update official packages
+    println!("\nUpdating official packages via pacman...");
+    let official_status = Command::new("sudo")
+        .arg("pacman")
+        .arg("-Syu")
+        .status()?;
+    if official_status.success() {
+        println!("Official packages updated successfully.");
+    } else {
+        eprintln!("Failed to update official packages.");
     }
 
     Ok(())
@@ -455,7 +538,7 @@ fn print_help() {
     println!("  search, s <package>     Search for a package in the AUR and official repositories (sorted by votes).");
     println!("  install, i <package>    Install a package from the AUR or official repositories (checks dependencies, clones, builds).");
     println!("  uninstall, ui <package> Uninstall a package.");
-    println!("  update, up             Update installed AUR packages.");
+    println!("  update, up              Update installed AUR packages and official packages.");
     println!("  help                    Show this help message.");
     println!("  exit                    Exit the application.");
 }
@@ -506,10 +589,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 } else {
                     let debug_mode = args.contains(&"-d");
                     let query = args.iter()
-                            .filter(|arg| **arg != "-d")
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(" ");
+                        .filter(|arg| **arg != "-d")
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ");
 
                     match search_aur(&query).await {
                         Ok(aur_response) => {
@@ -536,7 +619,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                             let mut current_index = total_count;
 
-                            // Display AUR packages, sorted by votes, high to low
                             // Display AUR packages, sorted by votes, high to low
                             for pkg in combined_packages.iter() {
                                 let installed = if is_package_installed(&pkg.name, debug_mode) {
@@ -571,10 +653,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                                 ""
                                             };
                                             println!("{}. {} (v{}){}",
-                                                current_index,
-                                                name,
-                                                version,
-                                                installed
+                                                     current_index,
+                                                     name,
+                                                     version,
+                                                     installed
                                             );
                                             if let Some((_, desc_line)) = lines.next() {
                                                 println!("   Description: {}", desc_line.trim());
@@ -626,7 +708,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     // Remove packages with dependency cleanup
                     let status = Command::new("sudo")
                         .arg("pacman")
-                        .arg("-Rns")  // -Rns removes package, dependencies, and config files
+                        .arg("-Rns")
                         .args(&packages)
                         .status();
 
