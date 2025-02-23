@@ -532,7 +532,7 @@ async fn update_packages() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Display help text.
+/// Display help texts.
 fn print_help() {
     println!("Available commands:");
     println!("  search, s <package>     Search for a package in the AUR and official repositories (sorted by votes).");
