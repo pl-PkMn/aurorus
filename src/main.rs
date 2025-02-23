@@ -104,7 +104,7 @@ fn parse_dependencies(srcinfo: &str) -> Vec<String> {
     deps
 }
 
-/// Checks whether a dependency is installed by calling "pacman -Q <dep>".
+/// Checks whether a dependency is installed by calling "pacman -Q <pkg name>".
 fn check_dependency(dep: &str) -> bool {
     let status = Command::new("pacman").arg("-Q").arg(dep).status();
     match status {
