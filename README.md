@@ -33,12 +33,14 @@ exit : Exit the application.
 
 - **Search for a package:**
   ```sh
-  aurorus search <package_name>
+  aurorus
+  search <package_name>
   ```
 
 - **Install a package:**
   ```sh
-  aurorus install <package_name>
+  aurorus
+  install <package_name>
   ```
 
 ## Contributing
