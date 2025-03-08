@@ -1,14 +1,12 @@
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
-use std::env;
-use std::error::Error as StdError;
-use std::fmt;
-use std::io::{self, Write};
-use std::path::Path;
-use std::process::Command;
-use tokio::fs;
-use tokio::process::Command as TokioCommand;
+use std::{
+    env, fmt, io::{self, Write},
+    path::Path, process::Command,
+    error::Error as StdError
+};
+use tokio::{fs, process::Command as TokioCommand};
 use version_compare::Version;
 
 mod types {
@@ -40,12 +38,12 @@ mod types {
 
 use types::*;
 
+// Simplified error handling
 #[derive(Debug)]
 enum AurorusError {
     Network(reqwest::Error),
     Io(io::Error),
-    HttpStatus(String),
-    OtherError(String),
+    Message(String),
 }
 
 impl fmt::Display for AurorusError {
@@ -53,8 +51,7 @@ impl fmt::Display for AurorusError {
         match self {
             Self::Network(e) => write!(f, "Network error: {}", e),
             Self::Io(e) => write!(f, "I/O error: {}", e),
-            Self::HttpStatus(s) => write!(f, "HTTP error: {}", s),
-            Self::OtherError(s) => write!(f, "{}", s),
+            Self::Message(s) => write!(f, "{}", s),
         }
     }
 }
@@ -62,27 +59,20 @@ impl fmt::Display for AurorusError {
 impl StdError for AurorusError {}
 
 impl From<reqwest::Error> for AurorusError {
-    fn from(error: reqwest::Error) -> Self {
-        AurorusError::Network(error)
-    }
+    fn from(error: reqwest::Error) -> Self { AurorusError::Network(error) }
 }
 
 impl From<io::Error> for AurorusError {
-    fn from(error: io::Error) -> Self {
-        AurorusError::Io(error)
-    }
+    fn from(error: io::Error) -> Self { AurorusError::Io(error) }
+}
+
+// Replace generic implementation with more specific ones
+impl From<&str> for AurorusError {
+    fn from(error: &str) -> Self { AurorusError::Message(error.to_string()) }
 }
 
 impl From<String> for AurorusError {
-    fn from(error: String) -> Self {
-        AurorusError::OtherError(error)
-    }
-}
-
-impl From<&str> for AurorusError {
-    fn from(error: &str) -> Self {
-        AurorusError::OtherError(error.to_string())
-    }
+    fn from(error: String) -> Self { AurorusError::Message(error) }
 }
 
 type Result<T> = std::result::Result<T, AurorusError>;
@@ -91,56 +81,44 @@ mod aur {
     use super::*;
 
     pub async fn search(client: &Client, query: &str) -> Result<AurResponse> {
-        let url = format!(
-            "https://aur.archlinux.org/rpc/?v=5&type=search&arg={}",
-            query
-        );
+        let url = format!("https://aur.archlinux.org/rpc/?v=5&type=search&arg={}", query);
         let resp = client.get(&url).send().await?;
 
         if !resp.status().is_success() {
-            return Err(AurorusError::HttpStatus(resp.status().to_string()));
+            return Err(format!("HTTP error: {}", resp.status()).into());
         }
 
         Ok(resp.json().await?)
     }
 
     pub async fn fetch_srcinfo(client: &Client, package: &str) -> Result<String> {
-        let url = format!(
-            "https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={}",
-            package
-        );
+        let url = format!("https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={}", package);
         let resp = client.get(&url).send().await?;
 
         if !resp.status().is_success() {
-            return Err(AurorusError::HttpStatus(format!(
-                "Failed to fetch .SRCINFO for package {}: HTTP {}",
-                package,
-                resp.status()
-            )));
+            return Err(format!("Failed to fetch .SRCINFO for {}: HTTP {}", package, resp.status()).into());
         }
 
         Ok(resp.text().await?)
     }
 
     pub fn parse_dependencies(srcinfo: &str) -> Vec<String> {
-        let mut deps = Vec::new();
-        for line in srcinfo.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("depends =") {
-                if let Some(dep) = trimmed.split('=').nth(1) {
-                    deps.push(dep.trim().to_string());
+        srcinfo.lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("depends =") {
+                    trimmed.split('=').nth(1).map(|dep| dep.trim().to_string())
+                } else {
+                    None
                 }
-            }
-        }
-        deps
+            })
+            .collect()
     }
 
     pub async fn clone_package_repo(package: &str) -> Result<String> {
         let repo_url = format!("https://aur.archlinux.org/{}.git", package);
-        let cache_dir = format!(
-            "/home/{}/.cache/aurorus",
-            env::var("USER").unwrap_or_else(|_| "user".to_string())
-        );
+        let cache_dir = format!("/home/{}/.cache/aurorus",
+                              env::var("USER").unwrap_or_else(|_| "user".to_string()));
         let dest = format!("{}/{}", cache_dir, package);
 
         if !Path::new(&cache_dir).exists() {
@@ -154,7 +132,7 @@ mod aur {
 
         println!("Cloning {} into {} ...", repo_url, dest);
         let status = Command::new("git")
-            .args(&["clone", &repo_url, &dest])
+            .args(["clone", &repo_url, &dest])
             .status()?;
 
         if !status.success() {
@@ -169,35 +147,33 @@ mod pacman {
     use super::*;
 
     pub fn search(query: &str) -> Vec<String> {
-        let output = Command::new("pacman")
+        Command::new("pacman")
             .arg("-Ss")
             .arg(query)
             .output()
-            .expect("Failed to execute pacman search");
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout.lines().map(|line| line.to_string()).collect()
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .map(|line| line.to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
-    pub fn is_installed(package: &str, debug: bool) -> bool {
-        let result = Command::new("pacman")
+    pub fn is_installed(package: &str) -> bool {
+        Command::new("pacman")
             .args(["-Q", package])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map_or(false, |status| status.success());
-
-        if debug {
-            println!("Debug: Checking {} - installed: {}", package, result);
-        }
-        result
+            .map_or(false, |status| status.success())
     }
 
     pub fn get_installed_aur_packages() -> Result<Vec<(String, String)>> {
         let output = Command::new("pacman").args(["-Qm"]).output()?;
-
         let installed = String::from_utf8_lossy(&output.stdout);
-        let packages: Vec<(String, String)> = installed
+
+        let packages = installed
             .lines()
             .filter_map(|line| {
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -217,11 +193,7 @@ mod display {
     use super::*;
 
     pub fn print_package(index: usize, pkg: &AurPackage) {
-        let installed = if pacman::is_installed(&pkg.name, false) {
-            " (Installed)"
-        } else {
-            ""
-        };
+        let installed = if pacman::is_installed(&pkg.name) { " (Installed)" } else { "" };
         println!("{}. {} ({}){}", index, pkg.name, pkg.version, installed);
         if let Some(desc) = &pkg.description {
             println!("   description: {}", desc);
@@ -237,11 +209,7 @@ mod display {
                 let name = parts[0];
                 let version = parts.get(1).unwrap_or(&"");
                 let pkg_name = name.split('/').last().unwrap_or(name);
-                let installed = if pacman::is_installed(pkg_name, false) {
-                    " (Installed)"
-                } else {
-                    ""
-                };
+                let installed = if pacman::is_installed(pkg_name) { " (Installed)" } else { "" };
                 println!("{}. {} ({}){}", index, name, version, installed);
                 if let Some(desc) = description {
                     println!("   description: {}", desc);
@@ -253,12 +221,8 @@ mod display {
 
     pub fn print_help() {
         println!("Available commands:");
-        println!(
-            "  search, s <package>     Search for a package in the AUR and official repositories (sorted by votes)."
-        );
-        println!(
-            "  install, i <package>    Install a package from the AUR or official repositories (checks dependencies, clones, builds)."
-        );
+        println!("  search, s <package>     Search for a package in the AUR and official repositories.");
+        println!("  install, i <package>    Install a package from the AUR or official repositories.");
         println!("  uninstall, ui <package> Uninstall a package.");
         println!("  update, up              Update installed AUR packages and official packages.");
         println!("  help                    Show this help message.");
@@ -269,236 +233,205 @@ mod display {
 mod actions {
     use super::*;
 
-    pub async fn search_packages(client: &Client, query: &str, debug_mode: bool) -> Result<()> {
+    pub async fn search_packages(client: &Client, query: &str) -> Result<()> {
+        // Process AUR results
         let aur_response = aur::search(client, query).await?;
-        let mut combined_packages = aur_response.results.unwrap_or_default();
+        let mut aur_packages = aur_response.results.unwrap_or_default();
 
-        // Sort AUR packages by votes
-        combined_packages.sort_by(|a, b| a.num_votes.cmp(&b.num_votes));
+        // Sort by votes - ascending order (least votes first)
+        aur_packages.sort_by(|a, b| a.num_votes.cmp(&b.num_votes));
 
         // Get official packages
         let official_packages = pacman::search(query);
-        let mut total_count = 0;
 
-        // Count official packages
-        for line in official_packages.iter() {
+        // Count official packages to determine numbering
+        let mut official_count = 0;
+        let mut lines = official_packages.iter().peekable();
+        while let Some(line) = lines.peek() {
             if !line.starts_with(char::is_whitespace) && line.find('[').is_some() {
-                total_count += 1;
+                official_count += 1;
             }
-        }
-        total_count += combined_packages.len();
-
-        let mut current_index = total_count;
-
-        // Display AUR packages
-        for pkg in combined_packages.iter() {
-            display::print_package(current_index, pkg);
-            current_index -= 1;
+            lines.next();
         }
 
-        // Display official packages
+        // Set starting index for AUR packages (total packages count)
+        let total_packages = aur_packages.len() + official_count;
+        let mut index = total_packages;
+
+        // Display AUR packages with decreasing indices
+        for pkg in &aur_packages {
+            display::print_package(index, pkg);
+            index -= 1;
+        }
+
+        // Reset lines iterator and display official packages with continuing indices
+        index = official_count;
         let mut lines = official_packages.iter().peekable();
         while let Some(line) = lines.next() {
-            if !line.starts_with(char::is_whitespace) {
+            if !line.starts_with(char::is_whitespace) && line.find('[').is_some() {
                 let description = lines
                     .next()
                     .filter(|desc_line| desc_line.starts_with(char::is_whitespace))
                     .map(|desc_line| desc_line.trim());
 
-                display::print_official_pkg(current_index, line, description);
-                current_index -= 1;
+                display::print_official_pkg(index, line, description);
+                index -= 1;
             }
         }
 
         Ok(())
     }
 
-    pub async fn get_missing_dependencies(client: &Client, package: &str) -> Result<Vec<String>> {
+    async fn handle_dependencies(client: &Client, package: &str) -> Result<()> {
         println!("Fetching .SRCINFO for {}...", package);
         let srcinfo = aur::fetch_srcinfo(client, package).await?;
         let deps = aur::parse_dependencies(&srcinfo);
 
         if deps.is_empty() {
             println!("No dependencies found for {}.", package);
-            return Ok(vec![]);
+            return Ok(());
         }
 
         println!("Found dependencies:");
-        for dep in &deps {
-            println!("  {}", dep);
-        }
-
-        println!("\nChecking for missing dependencies:");
         let mut missing = Vec::new();
-        for dep in deps {
-            if !pacman::is_installed(&dep, false) {
-                println!("  {} is missing.", dep);
-                missing.push(dep);
-            } else {
-                println!("  {} is installed.", dep);
+        for dep in &deps {
+            let is_installed = pacman::is_installed(dep);
+            println!("  {} {}", dep, if is_installed { "(installed)" } else { "(missing)" });
+            if !is_installed {
+                missing.push(dep.clone());
             }
         }
 
-        if !missing.is_empty() {
-            println!("\nMissing dependencies:");
-            for dep in &missing {
-                println!("  {}", dep);
-            }
-        } else {
+        if missing.is_empty() {
             println!("All dependencies for {} are satisfied.", package);
+            return Ok(());
         }
 
-        Ok(missing)
-    }
+        println!("\nDo you want to install {} missing dependencies? (y/N):", missing.len());
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
 
-    pub async fn install_aur_dependency(client: &Client, dep: &str) -> Result<()> {
-        println!("Installing dependency {}...", dep);
-        let package_dir = aur::clone_package_repo(dep).await?;
-        let mut child = TokioCommand::new("makepkg")
-            .args(&["-si", "--noconfirm"])
-            .current_dir(&package_dir)
-            .spawn()?;
+        if input.trim().eq_ignore_ascii_case("y") {
+            for dep in missing {
+                println!("Installing dependency {}...", dep);
+                let package_dir = aur::clone_package_repo(&dep).await?;
 
-        let status = child.wait().await?;
-        if status.success() {
-            println!("Dependency {} installed successfully.", dep);
+                let status = TokioCommand::new("makepkg")
+                    .args(["-si", "--noconfirm"])
+                    .current_dir(&package_dir)
+                    .status()
+                    .await?;
+
+                if status.success() {
+                    println!("Dependency {} installed successfully.", dep);
+                } else {
+                    eprintln!("Installation of dependency {} failed.", dep);
+                }
+            }
         } else {
-            eprintln!("Installation of dependency {} failed.", dep);
+            println!("Proceeding without installing missing dependencies.");
         }
 
         Ok(())
     }
 
     pub async fn install_package(client: &Client, query: &str) -> Result<()> {
-        // Step 1: Search for packages
+        // Search for packages
         let aur_response = aur::search(client, query).await?;
+        let mut aur_packages = aur_response.results.unwrap_or_default();
         let official_packages = pacman::search(query);
 
-        // Step 2: Combine and process packages
-        let mut combined_packages = aur_response.results.unwrap_or_default();
-        combined_packages.sort_by_key(|pkg| pkg.num_votes.unwrap_or(0));
+        // Sort AUR packages by votes (ascending - least to most voted)
+        aur_packages.sort_by(|a, b| a.num_votes.cmp(&b.num_votes));
 
-        // Calculate total packages
-        let mut total_official_count = 0;
-        for line in official_packages.iter() {
-            if !line.starts_with(char::is_whitespace) && line.find('[').is_some() {
-                total_official_count += 1;
+        // Build combined package list
+        let mut all_packages = Vec::new();
+
+        // Count official packages
+        let mut official_count = 0;
+        for line in official_packages.iter().filter(|line| !line.starts_with(char::is_whitespace)) {
+            if line.find('[').is_some() {
+                official_count += 1;
             }
         }
 
-        let total_count = total_official_count + combined_packages.len();
-        let mut current_index = total_count;
-
-        // Display AUR packages
-        println!("Found {} package(s) in AUR:", combined_packages.len());
-        for pkg in combined_packages.iter() {
-            display::print_package(current_index, pkg);
-            current_index -= 1;
+        // Add AUR packages (reversed index order)
+        let total_packages = aur_packages.len() + official_count;
+        for (i, pkg) in aur_packages.iter().enumerate() {
+            let index = total_packages - i;
+            all_packages.push((true, pkg.name.clone(), pkg.version.clone(), index));
         }
 
-        // Display official packages
-        // Display official packages
-        let mut lines = official_packages.iter().peekable();
-        while let Some(line) = lines.next() {
-            if !line.starts_with(char::is_whitespace) {
-                let description = lines
-                    .next()
-                    .filter(|desc_line| desc_line.starts_with(char::is_whitespace))
-                    .map(|desc_line| desc_line.trim());
-
-                display::print_official_pkg(current_index, line, description);
-                current_index -= 1;
+        // Add official packages
+        let mut curr_index = official_count;
+        for line in official_packages.iter().filter(|line| !line.starts_with(char::is_whitespace)) {
+            if let Some(repo_start) = line.find('[') {
+                let parts: Vec<&str> = line[..repo_start].trim().split_whitespace().collect();
+                if parts.len() >= 1 {
+                    let name = parts[0].to_string();
+                    let version = parts.get(1).map(|&v| v.to_string()).unwrap_or_default();
+                    all_packages.push((false, name, version, curr_index));
+                    curr_index -= 1;
+                }
             }
         }
 
-        // Step 3: Prompt user to select a package
-        println!("\nEnter the number of the package to install (or type 'back' to cancel):");
+        // Display packages
+        println!("Found {} package(s):", all_packages.len());
+        for (is_aur, name, version, index) in &all_packages {
+            let source = if *is_aur { "AUR" } else { "repo" };
+            let installed = if pacman::is_installed(name) { " (Installed)" } else { "" };
+            println!("{}. {} ({}) [{}]{}", index, name, version, source, installed);
+        }
+
+        // Get user selection
+        println!("\nEnter the package number to install (or 'back' to cancel):");
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
         let input = input.trim();
 
-        if input.eq_ignore_ascii_case("back") || input.eq_ignore_ascii_case("quit") {
-            println!("Exiting installation process.");
+        if input.eq_ignore_ascii_case("back") {
             return Ok(());
         }
 
-        let selection: usize = match input.parse() {
-            Ok(num) if (1..=total_count).contains(&num) => num,
-            _ => {
-                return Err(format!(
-                    "Invalid selection. Please enter a number between 1 and {}.",
-                    total_count
-                )
-                .into());
-            }
-        };
+        let selection: usize = input.parse().map_err(|_| "Invalid selection")?;
 
-        // Adjust selection to match the reversed numbering
-        let reversed_selection = total_count - selection + 1;
-        let selected_package = if reversed_selection <= combined_packages.len() {
-            &combined_packages[reversed_selection - 1].name
-        } else {
-            // Extract the package name from the official repository
-            let mut count = 0;
-            let mut package_name = "";
-            for line in official_packages.iter() {
-                if !line.starts_with(char::is_whitespace) && line.find('[').is_some() {
-                    count += 1;
-                    if count == (reversed_selection - combined_packages.len()) {
-                        package_name = line.split_whitespace().next().unwrap_or("");
-                        break;
-                    }
-                }
-            }
-            package_name
-        };
+        // Find the package with the matching index
+        let selected_package = all_packages.iter()
+            .find(|(_, _, _, idx)| *idx == selection)
+            .ok_or_else(|| format!("Invalid package number: {}", selection))?;
 
-        println!("Installing {}...", selected_package);
+        let (is_aur, name, _, _) = selected_package;
+        println!("Installing {}...", name);
 
-        // Check dependencies and get missing ones
-        let missing_deps = get_missing_dependencies(client, selected_package).await?;
-        if !missing_deps.is_empty() {
-            println!("\nDo you want to install the missing dependencies? (y/N):");
-            let mut dep_input = String::new();
-            io::stdin().read_line(&mut dep_input)?;
+        // Install package
+        if *is_aur {
+            // Handle dependencies for AUR packages
+            handle_dependencies(client, name).await?;
 
-            if dep_input.trim().eq_ignore_ascii_case("y") {
-                for dep in missing_deps {
-                    install_aur_dependency(client, &dep).await?;
-                }
-            } else {
-                println!("Proceeding without installing missing dependencies.");
-            }
-        }
-
-        // Install the selected package
-        if selection <= combined_packages.len() {
-            let package_dir = aur::clone_package_repo(selected_package).await?;
-            let mut child = TokioCommand::new("makepkg")
-                .arg("-si")
+            // Clone and build
+            let package_dir = aur::clone_package_repo(name).await?;
+            let status = TokioCommand::new("makepkg")
+                .args(["-si"])
                 .current_dir(&package_dir)
-                .spawn()?;
+                .status()
+                .await?;
 
-            let status = child.wait().await?;
-            if status.success() {
-                println!("Package {} installed successfully.", selected_package);
-            } else {
-                eprintln!("Installation of {} failed.", selected_package);
+            if !status.success() {
+                return Err(format!("Failed to install {}", name).into());
             }
         } else {
+            // Install from official repos
             let status = Command::new("sudo")
-                .arg("pacman")
-                .arg("-S")
-                .arg(selected_package)
+                .args(["pacman", "-S", name])
                 .status()?;
 
-            if status.success() {
-                println!("Package {} installed successfully.", selected_package);
-            } else {
-                eprintln!("Installation of {} failed.", selected_package);
+            if !status.success() {
+                return Err(format!("Failed to install {}", name).into());
             }
         }
 
+        println!("Package {} installed successfully.", name);
         Ok(())
     }
 
@@ -506,9 +439,7 @@ mod actions {
         // Get installed AUR packages
         let packages = pacman::get_installed_aur_packages()?;
 
-        if packages.is_empty() {
-            println!("No AUR packages installed.");
-        } else {
+        if !packages.is_empty() {
             println!("Checking {} AUR package(s)...", packages.len());
 
             // Create chunks for bulk RPC requests
@@ -537,21 +468,21 @@ mod actions {
                 .collect::<Vec<_>>()
                 .await;
 
+            // Process results and find updates
             for result in results {
                 if let Ok(response) = result {
                     if let Some(aur_packages) = response.results {
                         for aur_pkg in aur_packages {
-                            if let Some((_, local_ver)) =
-                                packages.iter().find(|(name, _)| name == &aur_pkg.name)
+                            if let Some((_, local_ver)) = packages.iter()
+                                .find(|(name, _)| name == &aur_pkg.name)
                             {
-                                let ver_local = Version::from(local_ver);
-                                let ver_aur = Version::from(&aur_pkg.version);
-                                if let (Some(ver_local), Some(ver_aur)) = (ver_local, ver_aur) {
-                                    if ver_local < ver_aur {
+                                if let (Some(v_local), Some(v_aur)) =
+                                    (Version::from(local_ver), Version::from(&aur_pkg.version)) {
+                                    if v_local < v_aur {
                                         updates_available.push((
                                             aur_pkg.name,
                                             local_ver.clone(),
-                                            aur_pkg.version,
+                                            aur_pkg.version
                                         ));
                                     }
                                 }
@@ -562,68 +493,63 @@ mod actions {
             }
 
             if updates_available.is_empty() {
-                println!("No available update for AUR packages.");
+                println!("No updates available for AUR packages.");
             } else {
-                println!(
-                    "\nUpdates available for {} package(s):",
-                    updates_available.len()
-                );
+                // Display available updates
+                println!("\nUpdates available for {} package(s):", updates_available.len());
                 for (i, (pkg, current, new)) in updates_available.iter().enumerate() {
-                    println!("{}. {} ({} -> {})", i + 1, pkg, current, new);
+                    println!("{}. {} ({} → {})", i + 1, pkg, current, new);
                 }
 
-                println!(
-                    "\nEnter package numbers to update (e.g., '1 2 3'), press Enter to update all packages, or type 'back' to cancel:"
-                );
+                // Get user selection
+                println!("\nEnter package numbers to update (e.g., '1 2 3'),");
+                println!("press Enter to update all, or type 'back' to cancel:");
                 let mut input = String::new();
                 io::stdin().read_line(&mut input)?;
                 let input = input.trim();
 
-                if input.eq_ignore_ascii_case("back") || input.eq_ignore_ascii_case("quit") {
-                    println!("Exiting update process.");
+                if input.eq_ignore_ascii_case("back") {
                     return Ok(());
                 }
 
-                let to_update: Vec<(String, String, String)> =
-                    if input.is_empty() || input.to_lowercase() == "all" {
-                        updates_available
-                    } else {
-                        let selected: Vec<usize> = input
-                            .split_whitespace()
-                            .filter_map(|s| s.parse::<usize>().ok())
-                            .filter(|&n| n > 0 && n <= updates_available.len())
-                            .collect();
+                // Determine which packages to update
+                let to_update = if input.is_empty() {
+                    updates_available
+                } else {
+                    input.split_whitespace()
+                        .filter_map(|s| s.parse::<usize>().ok())
+                        .filter(|&n| n > 0 && n <= updates_available.len())
+                        .map(|i| updates_available[i - 1].clone())
+                        .collect()
+                };
 
-                        selected
-                            .iter()
-                            .filter_map(|&i| updates_available.get(i - 1).cloned())
-                            .collect()
-                    };
-
+                // Update selected packages
                 for (package, _, _) in to_update {
                     println!("\nUpdating {}...", package);
                     let pkg_path = aur::clone_package_repo(&package).await?;
 
-                    let install_status = TokioCommand::new("makepkg")
+                    let status = TokioCommand::new("makepkg")
                         .args(["-si", "--noconfirm"])
                         .current_dir(&pkg_path)
                         .status()
                         .await?;
 
-                    if install_status.success() {
+                    if status.success() {
                         println!("{} updated successfully", package);
                     } else {
                         eprintln!("Failed to update {}", package);
                     }
                 }
             }
+        } else {
+            println!("No AUR packages installed.");
         }
 
         // Update official packages
         println!("\nUpdating official packages via pacman...");
-        let official_status = Command::new("sudo").arg("pacman").arg("-Syu").status()?;
+        let status = Command::new("sudo").args(["pacman", "-Syu"]).status()?;
 
-        if official_status.success() {
+        if status.success() {
             println!("Official packages updated successfully.");
         } else {
             eprintln!("Failed to update official packages.");
@@ -632,33 +558,22 @@ mod actions {
         Ok(())
     }
 
-    pub fn uninstall_package(packages: Vec<&str>) -> Result<()> {
-        if packages.is_empty() {
-            println!("No packages found to uninstall.");
-            return Ok(());
+    pub fn uninstall_package(package: &str) -> Result<()> {
+        if !pacman::is_installed(package) {
+            return Err(format!("Package {} is not installed", package).into());
         }
 
         let status = Command::new("sudo")
-            .arg("pacman")
-            .arg("-Rns")
-            .args(&packages)
+            .args(["pacman", "-Rns", package])
             .status()?;
 
         if status.success() {
-            println!("Packages and dependencies removed successfully.");
+            println!("Package {} removed successfully", package);
             Ok(())
         } else {
-            Err("Failed to remove packages".into())
+            Err(format!("Failed to remove package {}", package).into())
         }
     }
-}
-
-fn read_user_input() -> io::Result<String> {
-    let mut input = String::new();
-    print!("aurorus> ");
-    io::stdout().flush()?;
-    io::stdin().read_line(&mut input)?;
-    Ok(input.trim().to_string())
 }
 
 #[tokio::main]
@@ -666,95 +581,75 @@ async fn main() -> std::result::Result<(), Box<dyn StdError>> {
     println!("Welcome to aurorus!");
     println!("Type 'help' for a list of commands.\n");
 
-    // Create a reusable HTTP client
     let client = Client::new();
+    // Removed unused 'commands' variable
 
     loop {
-        let input = match read_user_input() {
-            Ok(line) => line,
-            Err(e) => {
-                eprintln!("Error reading input: {}", e);
-                continue;
-            }
-        };
+        // Read user input
+        print!("aurorus> ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim();
 
         if input.is_empty() {
             continue;
         }
 
+        // Parse command and arguments
         let mut parts = input.split_whitespace();
         let command = parts.next().unwrap().to_lowercase();
         let args: Vec<&str> = parts.collect();
 
+        // Execute command
         match command.as_str() {
-            "exit" => {
-                println!("Exiting aurorus. Goodbye!");
-                break;
-            }
-            "help" => {
-                display::print_help();
-            }
+            "exit" => break,
+
+            "help" => display::print_help(),
+
             "search" | "s" => {
                 if args.is_empty() {
-                    println!("Usage: search <package> or s <package> [-d]");
-                } else {
-                    let debug_mode = args.contains(&"-d");
-                    let query = args
-                        .iter()
-                        .filter(|arg| **arg != "-d")
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(" ");
-
-                    if let Err(e) = actions::search_packages(&client, &query, debug_mode).await {
-                        eprintln!("Error searching for package: {}", e);
-                    }
+                    println!("Usage: search <package> or s <package>");
+                    continue;
                 }
-            }
+                let query = args.join(" ");
+                if let Err(e) = actions::search_packages(&client, &query).await {
+                    eprintln!("Error: {}", e);
+                }
+            },
+
             "install" | "i" => {
                 if args.is_empty() {
                     println!("Usage: install <package> or i <package>");
-                } else {
-                    let query = args.join(" ");
-                    if let Err(e) = actions::install_package(&client, &query).await {
-                        eprintln!("Error installing package: {}", e);
-                    }
+                    continue;
                 }
-            }
+                let query = args.join(" ");
+                if let Err(e) = actions::install_package(&client, &query).await {
+                    eprintln!("Error: {}", e);
+                }
+            },
+
             "uninstall" | "ui" => {
                 if args.is_empty() {
                     println!("Usage: uninstall <package> or ui <package>");
-                } else {
-                    let package = args.join(" ");
-                    let debug_package = format!("{}-debug", package);
-                    let mut packages = Vec::new();
-
-                    // Add debug pkgs to remove list if installed
-                    if pacman::is_installed(&package, false) {
-                        packages.push(package.as_str());
-                    }
-                    if pacman::is_installed(&debug_package, false) {
-                        packages.push(debug_package.as_str());
-                    }
-
-                    if let Err(e) = actions::uninstall_package(packages) {
-                        eprintln!("Error uninstalling packages: {}", e);
-                    }
+                    continue;
                 }
-            }
+                let package = args.join(" ");
+                if let Err(e) = actions::uninstall_package(&package) {
+                    eprintln!("Error: {}", e);
+                }
+            },
+
             "update" | "up" => {
                 if let Err(e) = actions::update_packages(&client).await {
-                    eprintln!("Error updating packages: {}", e);
+                    eprintln!("Error: {}", e);
                 }
-            }
-            _ => {
-                println!(
-                    "Unknown command: {}. Type 'help' to see available commands.",
-                    command
-                );
-            }
+            },
+
+            _ => println!("Unknown command. Type 'help' to see available commands."),
         }
     }
 
+    println!("Exiting aurorus. Goodbye!");
     Ok(())
 }
